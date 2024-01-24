@@ -27,13 +27,11 @@ async def FrameTransport(pc, track):
     videoStream = CustomVideoStreamTrack(track)
 
     while True:
-        try:
-            frame = await videoStream.recv()
-            img = frame.to_ndarray(format='bgr24')
-            cv2.imshow("Server generated stream", img)
-            cv2.waitKey(1)
-        except Exception:
-            pass
+        frame = await videoStream.recv()
+        img = frame.to_ndarray(format='bgr24')
+        cv2.imshow("Server generated stream", img)
+        cv2.waitKey(1)
+        
 
 async def run(pc, signaling):
 
