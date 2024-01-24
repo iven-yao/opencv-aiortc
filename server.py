@@ -1,32 +1,96 @@
 import argparse
 import asyncio
-import logging
-import time
+import math
 
-from aiortc import RTCIceCandidate, RTCPeerConnection, RTCSessionDescription
+import cv2
+import numpy
+from aiortc import (
+    RTCIceCandidate,
+    RTCPeerConnection,
+    RTCSessionDescription,
+    VideoStreamTrack,
+)
 from aiortc.contrib.signaling import BYE, add_signaling_arguments, create_signaling
+from av import VideoFrame
 
 
-def channel_log(channel, t, message):
-    print("channel(%s) %s %s" % (channel.label, t, message))
+class FlagVideoStreamTrack(VideoStreamTrack):
+    """
+    A video track that returns an animated flag.
+    """
+
+    def __init__(self):
+        super().__init__()  # don't forget this!
+        self.counter = 0
+        height, width = 480, 640
+
+        # generate flag
+        data_bgr = numpy.hstack(
+            [
+                self._create_rectangle(
+                    width=213, height=480, color=(255, 0, 0)
+                ),  # blue
+                self._create_rectangle(
+                    width=214, height=480, color=(255, 255, 255)
+                ),  # white
+                self._create_rectangle(width=213, height=480, color=(0, 0, 255)),  # red
+            ]
+        )
+
+        # shrink and center it
+        M = numpy.float32([[0.5, 0, width / 4], [0, 0.5, height / 4]])
+        data_bgr = cv2.warpAffine(data_bgr, M, (width, height))
+
+        # compute animation
+        omega = 2 * math.pi / height
+        id_x = numpy.tile(numpy.array(range(width), dtype=numpy.float32), (height, 1))
+        id_y = numpy.tile(
+            numpy.array(range(height), dtype=numpy.float32), (width, 1)
+        ).transpose()
+
+        self.frames = []
+        for k in range(30):
+            phase = 2 * k * math.pi / 30
+            map_x = id_x + 10 * numpy.cos(omega * id_x + phase)
+            map_y = id_y + 10 * numpy.sin(omega * id_x + phase)
+            self.frames.append(
+                VideoFrame.from_ndarray(
+                    cv2.remap(data_bgr, map_x, map_y, cv2.INTER_LINEAR), format="bgr24"
+                )
+            )
+
+    async def recv(self):
+        pts, time_base = await self.next_timestamp()
+
+        frame = self.frames[self.counter % 30]
+        frame.pts = pts
+        frame.time_base = time_base
+        self.counter += 1
+        return frame
+
+    def _create_rectangle(self, width, height, color):
+        data_bgr = numpy.zeros((height, width, 3), numpy.uint8)
+        data_bgr[:, :] = color
+        return data_bgr
 
 
-def channel_send(channel, message):
-    channel_log(channel, ">", message)
-    channel.send(message)
+async def run(pc, signaling):
+    
 
+    # connect signaling
+    await signaling.connect()
 
-async def consume_signaling(pc, signaling):
+    # send offer
+    pc.addTrack(FlagVideoStreamTrack())
+    await pc.setLocalDescription(await pc.createOffer())
+    await signaling.send(pc.localDescription)
+
+    # consume signaling
     while True:
         obj = await signaling.receive()
 
         if isinstance(obj, RTCSessionDescription):
             await pc.setRemoteDescription(obj)
-
-            if obj.type == "offer":
-                # send answer
-                await pc.setLocalDescription(await pc.createAnswer())
-                await signaling.send(pc.localDescription)
         elif isinstance(obj, RTCIceCandidate):
             await pc.addIceCandidate(obj)
         elif obj is BYE:
@@ -34,68 +98,27 @@ async def consume_signaling(pc, signaling):
             break
 
 
-time_start = None
-
-
-def current_stamp():
-    global time_start
-
-    if time_start is None:
-        time_start = time.time()
-        return 0
-    else:
-        return int((time.time() - time_start) * 1000000)
-
-async def run_offer(pc, signaling):
-    await signaling.connect()
-
-    channel = pc.createDataChannel("chat")
-    channel_log(channel, "-", "created by local party")
-
-    async def send_pings():
-        while True:
-            channel_send(channel, "ping %d" % current_stamp())
-            await asyncio.sleep(1)
-
-    @channel.on("open")
-    def on_open():
-        asyncio.ensure_future(send_pings())
-
-    @channel.on("message")
-    def on_message(message):
-        channel_log(channel, "<", message)
-
-        if isinstance(message, str) and message.startswith("pong"):
-            elapsed_ms = (current_stamp() - int(message[5:])) / 1000
-            print(" RTT %.2f ms" % elapsed_ms)
-
-    # send offer
-    await pc.setLocalDescription(await pc.createOffer())
-    await signaling.send(pc.localDescription)
-
-    await consume_signaling(pc, signaling)
-
-
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Data channels ping/pong")
-    parser.add_argument("--verbose", "-v", action="count")
+    parser = argparse.ArgumentParser(description="Video stream from the command line")
     add_signaling_arguments(parser)
+    args = parser.parse_args(['-s','tcp-socket'])
 
-    args = parser.parse_args(['-s', 'tcp-socket'])
-
-    if args.verbose:
-        logging.basicConfig(level=logging.DEBUG)
-
+    # create signaling and peer connection
     signaling = create_signaling(args)
     pc = RTCPeerConnection()
-    coro = run_offer(pc, signaling)
 
     # run event loop
     loop = asyncio.get_event_loop()
     try:
-        loop.run_until_complete(coro)
+        loop.run_until_complete(
+            run(
+                pc=pc,
+                signaling=signaling,
+            )
+        )
     except KeyboardInterrupt:
         pass
     finally:
-        loop.run_until_complete(pc.close())
+        # cleanup
         loop.run_until_complete(signaling.close())
+        loop.run_until_complete(pc.close())

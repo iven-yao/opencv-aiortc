@@ -1,22 +1,51 @@
 import argparse
 import asyncio
-import logging
-import time
 
-from aiortc import RTCIceCandidate, RTCPeerConnection, RTCSessionDescription
+import cv2
+
+import numpy as np
+from aiortc import (
+    RTCIceCandidate,
+    RTCPeerConnection,
+    RTCSessionDescription,
+    MediaStreamTrack
+)
+
 from aiortc.contrib.signaling import BYE, add_signaling_arguments, create_signaling
 
+class CustomVideoStreamTrack(MediaStreamTrack):
+    kind = "video"
+    def __init__(self, track):
+        super().__init__()
+        self.track = track
 
-def channel_log(channel, t, message):
-    print("channel(%s) %s %s" % (channel.label, t, message))
+    async def recv(self):
+        frame = await self.track.recv()
+        return frame
+    
+async def FrameTransport(pc, track):
+    videoStream = CustomVideoStreamTrack(track)
 
+    while True:
+        try:
+            frame = await videoStream.recv()
+            img = frame.to_ndarray(format='bgr24')
+            cv2.imshow("Server generated stream", img)
+            cv2.waitKey(1)
+        except Exception:
+            pass
 
-def channel_send(channel, message):
-    channel_log(channel, ">", message)
-    channel.send(message)
+async def run(pc, signaling):
 
+    @pc.on("track")
+    async def on_track(track):
+        print("Receiving %s" % track.kind)
+        await FrameTransport(pc, track)
 
-async def consume_signaling(pc, signaling):
+    # connect signaling
+    await signaling.connect()
+
+    # consume signaling
     while True:
         obj = await signaling.receive()
 
@@ -34,57 +63,28 @@ async def consume_signaling(pc, signaling):
             break
 
 
-time_start = None
-
-
-def current_stamp():
-    global time_start
-
-    if time_start is None:
-        time_start = time.time()
-        return 0
-    else:
-        return int((time.time() - time_start) * 1000000)
-
-
-async def run_answer(pc, signaling):
-    await signaling.connect()
-
-    @pc.on("datachannel")
-    def on_datachannel(channel):
-        channel_log(channel, "-", "created by remote party")
-
-        @channel.on("message")
-        def on_message(message):
-            channel_log(channel, "<", message)
-
-            if isinstance(message, str) and message.startswith("ping"):
-                # reply
-                channel_send(channel, "pong" + message[4:])
-
-    await consume_signaling(pc, signaling)
-
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Data channels ping/pong")
-    parser.add_argument("--verbose", "-v", action="count")
+    parser = argparse.ArgumentParser(description="Bouncing Ball - client")
     add_signaling_arguments(parser)
+    args = parser.parse_args(['-s','tcp-socket'])
 
-    args = parser.parse_args(['-s', 'tcp-socket'])
-
-    if args.verbose:
-        logging.basicConfig(level=logging.DEBUG)
-
+    # create signaling and peer connection
     signaling = create_signaling(args)
     pc = RTCPeerConnection()
-    
-    coro = run_answer(pc, signaling)
 
     # run event loop
     loop = asyncio.get_event_loop()
     try:
-        loop.run_until_complete(coro)
+        loop.run_until_complete(
+            run(
+                pc=pc,
+                signaling=signaling,
+            )
+        )
     except KeyboardInterrupt:
         pass
     finally:
-        loop.run_until_complete(pc.close())
+        # cleanup
         loop.run_until_complete(signaling.close())
+        loop.run_until_complete(pc.close())
+        loop.run_until_complete(cv2.destroyAllWindows())
