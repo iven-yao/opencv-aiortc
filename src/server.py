@@ -35,7 +35,7 @@ class BouncingBall():
         # black background
         img = numpy.zeros((self.height, self.width, 3), dtype='uint8')
 
-        # check if crossing the bound and switching direction
+        # switching direction if crossing bounds
         if self.isCrossingBound(self.x, self.width):
             self.dx *= -1
         if self.isCrossingBound(self.y, self.height):
