@@ -21,11 +21,11 @@ class BouncingBall():
         self.x = 11
         self.y = 11
         self.r = 10
-        self.dx = 5
-        self.dy = 5
-        self.color = (0,0,255)
+        self.dx = 3
+        self.dy = 3
+        self.color = (255, 255, 255)
 
-    def isCrossBound(self, coord, max):
+    def isCrossingBound(self, coord, max):
         if coord-self.r <= 0 or coord+self.r >= max:
             return True
         
@@ -36,9 +36,9 @@ class BouncingBall():
         img = numpy.zeros((self.height, self.width, 3), dtype='uint8')
 
         # check if crossing the bound and switching direction
-        if self.isCrossBound(self.x, self.width):
+        if self.isCrossingBound(self.x, self.width):
             self.dx *= -1
-        if self.isCrossBound(self.y, self.height):
+        if self.isCrossingBound(self.y, self.height):
             self.dy *= -1
         
         # move
@@ -47,37 +47,53 @@ class BouncingBall():
 
         # draw ball
         cv2.circle(img, (self.x, self.y), self.r, self.color, -1)
-        return (img, self.x, self.y)
+        return img
 
 class BallVideoStreamTrack(VideoStreamTrack):
     """
     A video track that returns an animated bouncing ball.
     """
 
-    def __init__(self):
+    def __init__(self, ball):
         super().__init__()
         # generate ball
-        self.ball = BouncingBall()
+        self.ball = ball
         
 
     async def recv(self):
         pts, time_base = await self.next_timestamp()
-        img, x, y = self.ball.move()
+        img = self.ball.move()
         frame = VideoFrame.from_ndarray(img, format='bgr24')
         frame.pts = pts
         frame.time_base = time_base
         return frame
 
+def computeError(coords, x, y):
+    errX = int(coords[0]) - x
+    errY = int(coords[1]) - y
+    print("Recieved (%3d,%3d), Actual (%3d,%3d), Error (%3d,%3d)" % (int(coords[0]), int(coords[1]), x, y, errX, errY))
 
 
 async def run(pc, signaling):
-    
 
     # connect signaling
     await signaling.connect()
 
+    pc.createDataChannel('server')
+    ball = BouncingBall()
+
+    # recieving data
+    @pc.on("datachannel")
+    def on_datachannel(channel):
+        # print('Channel %s' % channel)
+        @channel.on("message")
+        def on_message(message):
+            if(message.startswith("[coords]:")):
+                coords = message.split(":")[1].split(",")
+                computeError(coords, ball.x, ball.y)
+
     # send offer
-    pc.addTrack(BallVideoStreamTrack())
+    pc.addTrack(BallVideoStreamTrack(ball))
     await pc.setLocalDescription(await pc.createOffer())
     await signaling.send(pc.localDescription)
 

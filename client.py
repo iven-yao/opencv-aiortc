@@ -13,6 +13,8 @@ from aiortc import (
 
 from aiortc.contrib.signaling import BYE, add_signaling_arguments, create_signaling
 
+from multiprocessing import Queue, Process, Value
+
 class CustomVideoStreamTrack(MediaStreamTrack):
     kind = "video"
     def __init__(self, track):
@@ -22,23 +24,57 @@ class CustomVideoStreamTrack(MediaStreamTrack):
     async def recv(self):
         frame = await self.track.recv()
         return frame
+
+def BallTracking(img_q, x, y):
+
+    while img_q._notempty:
+        img = img_q.get()
+        mask = cv2.inRange(img, (100, 100, 100), (255, 255, 255))
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        if(len(contours) > 0):
+            c = max(contours, key=cv2.contourArea)
+            M = cv2.moments(c)
+            x.value = int(M["m10"] / M["m00"])
+            y.value = int(M["m01"] / M["m00"])
+            # print("current location: (%i,%i)" % (x.value, y.value))
     
-async def FrameTransport(pc, track):
+    
+async def FrameTransport(pc, track, img_q, x, y, process_a):
     videoStream = CustomVideoStreamTrack(track)
+    channel = pc.createDataChannel('client')
 
     while True:
-        frame = await videoStream.recv()
-        img = frame.to_ndarray(format='bgr24')
-        cv2.imshow("Server generated stream", img)
-        cv2.waitKey(1)
-        
+        try: 
+            # get frame
+            frame = await videoStream.recv()
+
+            # show video
+            img = frame.to_ndarray(format='bgr24')
+
+            cv2.imshow("Bouncing Ball", img)
+            cv2.waitKey(1)
+            img_q.put(img)
+            channel.send("[coords]:"+str(x.value)+","+str(y.value))
+
+        except Exception:
+            process_a.join()
+            cv2.destroyAllWindows()
+            pass
+
+
 
 async def run(pc, signaling):
 
     @pc.on("track")
     async def on_track(track):
-        print("Receiving %s" % track.kind)
-        await FrameTransport(pc, track)
+        img_q = Queue()
+        coord_x = Value('i', 0)
+        coord_y = Value('i', 0)
+        # create process_a
+        process_a = Process(target=BallTracking, args=(img_q, coord_x, coord_y))
+        process_a.start()
+        await FrameTransport(pc, track, img_q, coord_x, coord_y, process_a)
 
     # connect signaling
     await signaling.connect()
@@ -85,4 +121,3 @@ if __name__ == "__main__":
         # cleanup
         loop.run_until_complete(signaling.close())
         loop.run_until_complete(pc.close())
-        loop.run_until_complete(cv2.destroyAllWindows())
