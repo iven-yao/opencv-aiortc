@@ -1,7 +1,5 @@
 import argparse
 import asyncio
-import math
-
 import cv2
 import numpy
 from aiortc import (

@@ -1,9 +1,6 @@
 import argparse
 import asyncio
-
 import cv2
-
-import numpy as np
 from aiortc import (
     RTCIceCandidate,
     RTCPeerConnection,

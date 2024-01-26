@@ -1,5 +1,4 @@
 import pytest
-from av import VideoFrame
 from server import BouncingBall, computeError
 
 @pytest.fixture
