@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
       - name: server
-        image: nimblecha-server
+        image: server
         imagePullPolicy: Never
         command: ["python3"]
         args: ["server.py"] 

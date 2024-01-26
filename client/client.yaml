@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
       - name: client
-        image: nimblecha-client
+        image: client
         imagePullPolicy: Never
         command: ["python3"]
         args: ["client.py"]
